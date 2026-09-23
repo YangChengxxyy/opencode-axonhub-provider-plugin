@@ -9,7 +9,7 @@
  *
  * Options (opencode.jsonc `plugins: [{ package, options }]`):
  *   baseURL    - AxonHub root, default https://llm.cccloud.xin (env AXONHUB_BASE_URL)
- *   apiKey     - AxonHub API key (env AXONHUB_API_KEY)
+ *   apiKey     - AxonHub API key (env AXONHUB_API_KEY, or /connect 的 AxonHub 集成)
  *   protocol   - "openai" | "anthropic" (default "openai")
  *   pricing    - "canonical" | "zenmux" | "none" (default "canonical")
  *                canonical = models.dev 厂商官方价; zenmux = ZenMux 网关价
@@ -24,6 +24,9 @@ type Options = {
   pricing?: "canonical" | "zenmux" | "none"
   refreshMs?: number
 }
+
+/** Integration id used for the /connect flow. */
+const INTEGRATION_ID = "axonhub"
 
 const OPENAI_PKG = "@opencode/ai/providers/openai-compatible"
 // anthropic-compatible 在 opencode 2.0.15 二进制里运行时解析裸包 '@opencode/ai' 失败，
@@ -239,54 +242,113 @@ export default Plugin.define({
   async setup(ctx) {
     const opts = (ctx.options ?? {}) as Options
     const baseURL = (opts.baseURL ?? process.env.AXONHUB_BASE_URL ?? "https://llm.cccloud.xin").replace(/\/+$/, "")
-    const apiKey = opts.apiKey ?? process.env.AXONHUB_API_KEY
     const protocol: "openai" | "anthropic" = opts.protocol === "anthropic" ? "anthropic" : "openai"
     const pricing = opts.pricing ?? "canonical"
     const refreshMs = opts.refreshMs ?? 300_000
 
-    if (!apiKey) {
-      throw new Error(`[axonhub] missing API key: set options.apiKey or AXONHUB_API_KEY`)
+    // 1. 注册 /connect 集成: TUI 里 /connect → AxonHub → 输入 API key。
+    await ctx.integration.transform((editor) => {
+      editor.update(INTEGRATION_ID, (integration) => {
+        integration.name = "AxonHub"
+      })
+      editor.method.update({
+        integrationID: INTEGRATION_ID,
+        method: { type: "key", label: "AxonHub API key" },
+      })
+      editor.method.update({
+        integrationID: INTEGRATION_ID,
+        method: { type: "env", names: ["AXONHUB_API_KEY"] },
+      })
+    })
+
+    // 2. 解析 key: options.apiKey → env → /connect 连接的 credential。
+    //    没有配置的 key 时不写 settings.apiKey, 由 OpenCode 按 integrationID
+    //    自动注入当前连接的 credential(模型请求时同样生效)。
+    const configuredKey = opts.apiKey ?? process.env.AXONHUB_API_KEY
+    const state: { apiKey?: string; models: AxonHubModel[]; devIndex?: ModelsDevIndex } = {
+      apiKey: configuredKey,
+      models: [],
+    }
+
+    const resolveConnectionKey = async (): Promise<string | undefined> => {
+      const connection = await ctx.integration.connection.active(INTEGRATION_ID).catch(() => undefined)
+      if (!connection) return undefined
+      const credential = await ctx.integration.connection.resolve(connection).catch(() => undefined)
+      return credential?.type === "key" ? credential.key : undefined
+    }
+
+    if (!state.apiKey) state.apiKey = await resolveConnectionKey()
+    if (state.apiKey) {
+      try {
+        state.models = await fetchModels(baseURL, state.apiKey)
+      } catch (err) {
+        console.error("[axonhub] initial model fetch failed:", err)
+      }
+    } else {
+      console.error("[axonhub] no API key yet: set options.apiKey / AXONHUB_API_KEY, or /connect → AxonHub")
     }
 
     const providerID = Provider.ID.make(protocol === "anthropic" ? "axonhub-anthropic" : "axonhub")
     const pricingProvider = pricing === "zenmux" ? "zenmux" : undefined
-
-    const source = {
-      models: await fetchModels(baseURL, apiKey),
-      devIndex: pricing === "none" ? undefined : await fetchModelsDev(),
-    }
+    if (pricing !== "none") state.devIndex = await fetchModelsDev()
 
     const providerInfo = (): Provider.Info => ({
       ...Provider.Info.empty(providerID),
       name: `AxonHub (${protocol})`,
       activation: "enabled",
+      // 绑定集成后, OpenCode 会把 /connect 里连接的 key 注入为该 provider 的鉴权。
+      // (运行时就是普通 string; schema 里是 brand 类型, 这里对齐其它 brand 字段的做法)
+      integrationID: INTEGRATION_ID as Provider.Info["integrationID"],
       package: protocol === "anthropic" ? ANTHROPIC_PKG : OPENAI_PKG,
       settings:
         protocol === "anthropic"
-          ? { baseURL: `${baseURL}/anthropic/v1`, apiKey }
-          : { baseURL: `${baseURL}/v1`, apiKey },
+          ? { baseURL: `${baseURL}/anthropic/v1`, ...(state.apiKey && { apiKey: state.apiKey }) }
+          : { baseURL: `${baseURL}/v1`, ...(state.apiKey && { apiKey: state.apiKey }) },
     })
 
     await ctx.provider.transform((editor) => {
       editor.add({
         info: providerInfo(),
-        models: buildModels(providerID, source.models, protocol, source.devIndex, pricingProvider),
+        models: buildModels(providerID, state.models, protocol, state.devIndex, pricingProvider),
       })
     })
 
+    const refreshModels = async () => {
+      const key = configuredKey ?? (await resolveConnectionKey())
+      if (!key) {
+        state.models = []
+        state.apiKey = undefined
+        await ctx.provider.reload()
+        return
+      }
+      state.models = await fetchModels(baseURL, key)
+      state.apiKey = key
+      if (pricing !== "none") state.devIndex = await fetchModelsDev()
+      await ctx.provider.reload()
+    }
+
+    // 3. /connect 连接/切换 key 后自动刷新模型列表。
+    const events = new AbortController()
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ signal: events.signal })) {
+        if (event.type !== "credential.updated" && event.type !== "credential.switched") continue
+        if (event.type === "credential.switched" && event.data.integrationID !== INTEGRATION_ID) continue
+        try {
+          await refreshModels()
+        } catch (err) {
+          console.error("[axonhub] refresh after credential change failed:", err)
+        }
+      }
+    })()
+
+    const disposers: (() => void)[] = [() => events.abort()]
+
     if (refreshMs > 0) {
       const timer = setInterval(() => {
-        void (async () => {
-          try {
-            source.models = await fetchModels(baseURL, apiKey)
-            if (pricing !== "none") source.devIndex = await fetchModelsDev()
-            await ctx.provider.reload()
-          } catch (err) {
-            console.error("[axonhub] refresh failed:", err)
-          }
-        })()
+        void refreshModels().catch((err) => console.error("[axonhub] refresh failed:", err))
       }, refreshMs)
-      return () => clearInterval(timer)
+      disposers.push(() => clearInterval(timer))
     }
+    return () => disposers.forEach((dispose) => dispose())
   },
 })
