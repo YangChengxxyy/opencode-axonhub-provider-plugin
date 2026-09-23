@@ -1,0 +1,20 @@
+{
+  "name": "opencode-axonhub-provider-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit || tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.15"
+  },
+  "devDependencies": {
+    "@opencode/ai": "^2.0.15",
+    "@opencode/schema": "^2.0.15",
+    "typescript": "^5.9.3"
+  }
+}
