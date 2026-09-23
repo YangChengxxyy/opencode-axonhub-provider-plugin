@@ -26,7 +26,9 @@ type Options = {
 }
 
 const OPENAI_PKG = "@opencode/ai/providers/openai-compatible"
-const ANTHROPIC_PKG = "@opencode/ai/providers/anthropic-compatible"
+// anthropic-compatible 在 opencode 2.0.15 二进制里运行时解析裸包 '@opencode/ai' 失败，
+// 改用内置 anthropic（同样 Anthropic 协议、支持 baseURL 覆盖）。
+const ANTHROPIC_PKG = "@opencode/ai/providers/anthropic"
 const MODELS_DEV_API = "https://models.dev/api.json"
 
 const EFFORTS = ["low", "medium", "high"] as const
