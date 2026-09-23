@@ -263,7 +263,7 @@ export default Plugin.define({
       package: protocol === "anthropic" ? ANTHROPIC_PKG : OPENAI_PKG,
       settings:
         protocol === "anthropic"
-          ? { baseURL: `${baseURL}/anthropic`, apiKey }
+          ? { baseURL: `${baseURL}/anthropic/v1`, apiKey }
           : { baseURL: `${baseURL}/v1`, apiKey },
     })
 
