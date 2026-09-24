@@ -51,7 +51,7 @@ key 解析优先级：`options.apiKey` → `AXONHUB_API_KEY` 环境变量 → `/
 - `openai`：注册 provider `axonhub`，`baseURL = {baseURL}/v1`，思考强度映射为 `reasoning_effort`
 - `anthropic`：注册 provider `axonhub-anthropic`，`baseURL = {baseURL}/anthropic`，思考强度映射为 `thinking.effort`
 
-价格与元数据：启动时抓取 `https://models.dev/api.json`，按模型 ID 匹配（大小写、`4.5`/`4-5` 版本风格归一化，支持 `vendor/model` 前缀）。`pricing: "canonical"` 优先取厂商官方数据（anthropic/openai/zai/deepseek/minimax/moonshotai/xai/stepfun/xiaomi），`"zenmux"` 优先取 ZenMux 网关价。匹配不到的模型回退 ID 启发式（价格留空）。注意：这是上游公开牌价，若你的 AxonHub 渠道有折扣/加价，以 AxonHub 后台实际计费为准。
+价格与元数据：基于 `https://models.dev/api.json`，按模型 ID 匹配（大小写、`4.5`/`4-5` 版本风格归一化，支持 `vendor/model` 前缀）。api.json 会缓存到磁盘（`$XDG_CACHE_HOME/opencode-axonhub-provider-plugin/api.json`，默认 `~/.cache/...`）：启动时先读缓存（离线也能秒开），随后后台拉取最新数据并热更新；每次模型列表刷新时也会重新拉取并回写缓存。`pricing: "canonical"` 优先取厂商官方数据（anthropic/openai/zai/deepseek/minimax/moonshotai/xai/stepfun/xiaomi），`"zenmux"` 优先取 ZenMux 网关价。匹配不到的模型回退 ID 启发式（价格留空）。注意：这是上游公开牌价，若你的 AxonHub 渠道有折扣/加价，以 AxonHub 后台实际计费为准。
 
 ## 开发
 
