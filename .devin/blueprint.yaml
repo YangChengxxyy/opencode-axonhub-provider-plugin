@@ -1,0 +1,11 @@
+# https://docs.devin.ai/onboard-devin/environment-yaml
+initialize: |
+  # Install Bun and put it on PATH for later steps.
+  curl -fsSL https://bun.sh/install | bash
+  echo "PATH=$HOME/.bun/bin:$PATH" >> $ENVRC
+maintenance: |
+  bun install
+knowledge:
+  - name: lint
+    contents: |
+      bun run typecheck  # tsgo --noEmit || tsc --noEmit
