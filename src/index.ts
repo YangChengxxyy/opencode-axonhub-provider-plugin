@@ -2,7 +2,8 @@
  * AxonHub provider plugin for OpenCode v2.
  *
  * - Auto-discovers models from an AxonHub gateway (`GET {baseURL}/v1/models`)
- * - Registers them under a configurable protocol ("openai" or "anthropic")
+ * - Registers them under both protocols: `axonhub-openai` (OpenAI Chat
+ *   Completions) and `axonhub-anthropic` (Anthropic Messages)
  * - Enriches models with pricing / context limits / reasoning capability from
  *   models.dev (canonical vendor rates, or ZenMux gateway rates); api.json is
  *   disk-cached and refreshed in the background
@@ -11,7 +12,6 @@
  * Options (opencode.jsonc `plugins: [{ package, options }]`):
  *   baseURL    - AxonHub root, default https://llm.cccloud.xin (env AXONHUB_BASE_URL)
  *   apiKey     - AxonHub API key (env AXONHUB_API_KEY, or /connect 的 AxonHub 集成)
- *   protocol   - "openai" | "anthropic" (default "openai")
  *   pricing    - "canonical" | "zenmux" | "none" (default "canonical")
  *                canonical = models.dev 厂商官方价; zenmux = ZenMux 网关价
  *   refreshMs  - model list refresh interval, default 300000 (0 disables)
@@ -25,10 +25,12 @@ import { Model, Plugin, Provider } from "@opencode/plugin"
 type Options = {
   baseURL?: string
   apiKey?: string
-  protocol?: "openai" | "anthropic"
   pricing?: "canonical" | "zenmux" | "none"
   refreshMs?: number
 }
+
+const PROTOCOLS = ["openai", "anthropic"] as const
+type Protocol = (typeof PROTOCOLS)[number]
 
 /** Integration id used for the /connect flow. */
 const INTEGRATION_ID = "axonhub"
@@ -222,7 +224,7 @@ async function fetchModelsDev(): Promise<ModelsDevIndex | undefined> {
 function buildModels(
   providerID: Provider.ID,
   remote: AxonHubModel[],
-  protocol: "openai" | "anthropic",
+  protocol: Protocol,
   devIndex: ModelsDevIndex | undefined,
   pricingProvider?: string,
 ): Model.Info[] {
@@ -276,7 +278,6 @@ export default Plugin.define({
   async setup(ctx) {
     const opts = (ctx.options ?? {}) as Options
     const baseURL = (opts.baseURL ?? process.env.AXONHUB_BASE_URL ?? "https://llm.cccloud.xin").replace(/\/+$/, "")
-    const protocol: "openai" | "anthropic" = opts.protocol === "anthropic" ? "anthropic" : "openai"
     const pricing = opts.pricing ?? "canonical"
     const refreshMs = opts.refreshMs ?? 300_000
 
@@ -322,7 +323,6 @@ export default Plugin.define({
       console.error("[axonhub] no API key yet: set options.apiKey / AXONHUB_API_KEY, or /connect → AxonHub")
     }
 
-    const providerID = Provider.ID.make(protocol === "anthropic" ? "axonhub-anthropic" : "axonhub")
     const pricingProvider = pricing === "zenmux" ? "zenmux" : undefined
     if (pricing !== "none") {
       // 先用磁盘缓存（离线/秒开），再后台拉取最新 api.json 并热更新 provider。
@@ -334,7 +334,7 @@ export default Plugin.define({
       })
     }
 
-    const providerInfo = (): Provider.Info => ({
+    const providerInfo = (providerID: Provider.ID, protocol: Protocol): Provider.Info => ({
       ...Provider.Info.empty(providerID),
       name: `AxonHub (${protocol})`,
       activation: "enabled",
@@ -348,11 +348,15 @@ export default Plugin.define({
           : { baseURL: `${baseURL}/v1`, ...(state.apiKey && { apiKey: state.apiKey }) },
     })
 
+    // 两个协议各注册一个 provider，共享同一份模型列表与 /connect 集成。
     await ctx.provider.transform((editor) => {
-      editor.add({
-        info: providerInfo(),
-        models: buildModels(providerID, state.models, protocol, state.devIndex, pricingProvider),
-      })
+      for (const protocol of PROTOCOLS) {
+        const providerID = Provider.ID.make(`axonhub-${protocol}`)
+        editor.add({
+          info: providerInfo(providerID, protocol),
+          models: buildModels(providerID, state.models, protocol, state.devIndex, pricingProvider),
+        })
+      }
     })
 
     const refreshModels = async () => {

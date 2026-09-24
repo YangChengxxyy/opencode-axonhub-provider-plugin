@@ -4,7 +4,7 @@ OpenCode v2 plugin that registers an [AxonHub](https://github.com/looplj/axonhub
 - 自动获取模型列表：`GET {baseURL}/v1/models`（默认每 5 分钟刷新）
 - 思考强度：推理模型暴露 `low` / `medium` / `high` variants（模型选择器中切换，如 `glm-5.3/high`）
 - 价格 / 上下文上限 / 能力元数据：从 [models.dev](https://models.dev/) 自动匹配（厂商官方价，或 ZenMux 网关价），无需手工配置
-- 可配置 baseURL、协议（`openai` / `anthropic`）、apiKey
+- 同时注册 openai / anthropic 两种协议的 provider（`axonhub-openai` 和 `axonhub-anthropic`），可配置 baseURL、apiKey
 - 支持 `/connect`：注册 `AxonHub` 集成，TUI 里 `/connect → AxonHub → 输入 API key` 即可，连接后自动拉取模型列表
 
 ## 使用
@@ -19,7 +19,6 @@ OpenCode v2 plugin that registers an [AxonHub](https://github.com/looplj/axonhub
       "options": {
         "baseURL": "https://llm.cccloud.xin",
         "apiKey": "ah-...",
-        "protocol": "openai",       // 或 "anthropic"（走 /anthropic/v1/messages）
         "pricing": "canonical",     // canonical=厂商官方价 | zenmux=ZenMux 网关价 | none=关闭
         "refreshMs": 300000          // 0 关闭自动刷新
       }
@@ -47,9 +46,9 @@ OpenCode v2 plugin that registers an [AxonHub](https://github.com/looplj/axonhub
 
 key 解析优先级：`options.apiKey` → `AXONHUB_API_KEY` 环境变量 → `/connect` 连接的 credential。
 
-协议说明：
-- `openai`：注册 provider `axonhub`，`baseURL = {baseURL}/v1`，思考强度映射为 `reasoning_effort`
-- `anthropic`：注册 provider `axonhub-anthropic`，`baseURL = {baseURL}/anthropic`，思考强度映射为 `thinking.effort`
+协议说明（两个 provider 同时注册，共享同一份 `/v1/models` 模型列表和 `/connect` 集成）：
+- `axonhub-openai`：`baseURL = {baseURL}/v1`，走 OpenAI Chat Completions，思考强度映射为 `reasoning_effort`
+- `axonhub-anthropic`：`baseURL = {baseURL}/anthropic`（最终请求 `{baseURL}/anthropic/v1/messages`），思考强度映射为 `thinking.effort`
 
 价格与元数据：基于 `https://models.dev/api.json`，按模型 ID 匹配（大小写、`4.5`/`4-5` 版本风格归一化，支持 `vendor/model` 前缀）。api.json 会缓存到磁盘（`$XDG_CACHE_HOME/opencode-axonhub-provider-plugin/api.json`，默认 `~/.cache/...`）：启动时先读缓存（离线也能秒开），随后后台拉取最新数据并热更新；每次模型列表刷新时也会重新拉取并回写缓存。`pricing: "canonical"` 优先取厂商官方数据（anthropic/openai/zai/deepseek/minimax/moonshotai/xai/stepfun/xiaomi），`"zenmux"` 优先取 ZenMux 网关价。匹配不到的模型回退 ID 启发式（价格留空）。注意：这是上游公开牌价，若你的 AxonHub 渠道有折扣/加价，以 AxonHub 后台实际计费为准。
 
