@@ -34,7 +34,7 @@ const OPENAI_PKG = "@opencode/ai/providers/openai-compatible"
 const ANTHROPIC_PKG = "@opencode/ai/providers/anthropic"
 const MODELS_DEV_API = "https://models.dev/api.json"
 
-const EFFORTS = ["low", "medium", "high"] as const
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const
 
 /** Model-ID substring heuristics: reasoning-capable model families (fallback). */
 const REASONING_MATCHERS: RegExp[] = [
