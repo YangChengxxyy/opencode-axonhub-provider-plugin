@@ -4,7 +4,8 @@
  * - Auto-discovers models from an AxonHub gateway (`GET {baseURL}/v1/models`)
  * - Registers them under a configurable protocol ("openai" or "anthropic")
  * - Enriches models with pricing / context limits / reasoning capability from
- *   models.dev (canonical vendor rates, or ZenMux gateway rates)
+ *   models.dev (canonical vendor rates, or ZenMux gateway rates); api.json is
+ *   disk-cached and refreshed in the background
  * - Exposes reasoning-effort (思考强度) variants for reasoning-capable models
  *
  * Options (opencode.jsonc `plugins: [{ package, options }]`):
@@ -15,6 +16,10 @@
  *                canonical = models.dev 厂商官方价; zenmux = ZenMux 网关价
  *   refreshMs  - model list refresh interval, default 300000 (0 disables)
  */
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+
 import { Model, Plugin, Provider } from "@opencode/plugin"
 
 type Options = {
@@ -33,6 +38,12 @@ const OPENAI_PKG = "@opencode/ai/providers/openai-compatible"
 // 改用内置 anthropic（同样 Anthropic 协议、支持 baseURL 覆盖）。
 const ANTHROPIC_PKG = "@opencode/ai/providers/anthropic"
 const MODELS_DEV_API = "https://models.dev/api.json"
+// models.dev api.json 的磁盘缓存: 启动先用缓存, 再后台拉最新数据热更新。
+const MODELS_DEV_CACHE = join(
+  process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
+  "opencode-axonhub-provider-plugin",
+  "api.json",
+)
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const
 
@@ -167,20 +178,43 @@ function push(map: Map<string, DevEntry[]>, key: string, e: DevEntry): void {
   else map.set(key, [e])
 }
 
+function parseModelsDev(body: Record<string, { models?: Record<string, DevModel> }>): ModelsDevIndex {
+  const entries: DevEntry[] = []
+  for (const [provider, info] of Object.entries(body)) {
+    for (const [key, dev] of Object.entries(info.models ?? {})) {
+      if (dev.limit?.context || dev.cost) entries.push({ provider, key, nkey: norm(key), dev })
+    }
+  }
+  return new ModelsDevIndex(entries)
+}
+
+async function readModelsDevCache(): Promise<ModelsDevIndex | undefined> {
+  try {
+    return parseModelsDev(JSON.parse(await readFile(MODELS_DEV_CACHE, "utf8")))
+  } catch {
+    return undefined
+  }
+}
+
+async function writeModelsDevCache(text: string): Promise<void> {
+  try {
+    await mkdir(dirname(MODELS_DEV_CACHE), { recursive: true })
+    await writeFile(MODELS_DEV_CACHE, text)
+  } catch (err) {
+    console.error("[axonhub] models.dev cache write failed:", err)
+  }
+}
+
 async function fetchModelsDev(): Promise<ModelsDevIndex | undefined> {
   try {
     const res = await fetch(MODELS_DEV_API)
     if (!res.ok) throw new Error(`${res.status}`)
-    const body = (await res.json()) as Record<string, { models?: Record<string, DevModel> }>
-    const entries: DevEntry[] = []
-    for (const [provider, info] of Object.entries(body)) {
-      for (const [key, dev] of Object.entries(info.models ?? {})) {
-        if (dev.limit?.context || dev.cost) entries.push({ provider, key, nkey: norm(key), dev })
-      }
-    }
-    return new ModelsDevIndex(entries)
+    const text = await res.text()
+    const index = parseModelsDev(JSON.parse(text))
+    void writeModelsDevCache(text)
+    return index
   } catch (err) {
-    console.error("[axonhub] models.dev fetch failed, falling back to heuristics:", err)
+    console.error("[axonhub] models.dev fetch failed, keeping cached data / heuristics:", err)
     return undefined
   }
 }
@@ -290,7 +324,15 @@ export default Plugin.define({
 
     const providerID = Provider.ID.make(protocol === "anthropic" ? "axonhub-anthropic" : "axonhub")
     const pricingProvider = pricing === "zenmux" ? "zenmux" : undefined
-    if (pricing !== "none") state.devIndex = await fetchModelsDev()
+    if (pricing !== "none") {
+      // 先用磁盘缓存（离线/秒开），再后台拉取最新 api.json 并热更新 provider。
+      state.devIndex = await readModelsDevCache()
+      void fetchModelsDev().then(async (index) => {
+        if (!index) return
+        state.devIndex = index
+        await ctx.provider.reload().catch((err) => console.error("[axonhub] provider reload failed:", err))
+      })
+    }
 
     const providerInfo = (): Provider.Info => ({
       ...Provider.Info.empty(providerID),
@@ -323,7 +365,8 @@ export default Plugin.define({
       }
       state.models = await fetchModels(baseURL, key)
       state.apiKey = key
-      if (pricing !== "none") state.devIndex = await fetchModelsDev()
+      // 拉取失败时保留现有索引（缓存或上次成功结果），避免元数据丢回启发式。
+      if (pricing !== "none") state.devIndex = (await fetchModelsDev()) ?? state.devIndex
       await ctx.provider.reload()
     }
 
